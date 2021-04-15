@@ -4,13 +4,13 @@ import numpy as np
 import keyboard
 import pandas as pd
 
-
 import brainflow
 from brainflow.board_shim import BoardShim, BrainFlowInputParams, LogLevels, BoardIds
 from brainflow.data_filter import DataFilter, FilterTypes, AggOperations, WindowFunctions, DetrendOperations
+from brainflow.ml_model import MLModel, BrainFlowMetrics, BrainFlowClassifiers, BrainFlowModelParams
+from brainflow.exit_codes import *
 
 OS = " " 
-
 
 def get_os():
     platform = sys.platform
@@ -30,6 +30,7 @@ def main():
 
     BoardShim.enable_dev_board_logger()
     params = BrainFlowInputParams()
+    MLModel.enable_ml_logger()
 
     if board_id == 0:
         get_os()
@@ -43,6 +44,60 @@ def main():
     board = BoardShim(board_id, params)
     nfft = DataFilter.get_nearest_power_of_two(sampling_rate)
 
+#### PRE-PROCESSING ########################
+
+    def filter_signal(_data, _eeg_channels):
+        for channel in _eeg_channels:
+            #5hz - 59hz bandpass
+            DataFilter.perform_bandpass(_data[channel], BoardShim.get_sampling_rate(board_id), 26.5, 21.5, 4, FilterTypes.BESSEL.value, 0)
+            #Anti-wifi
+            DataFilter.perform_bandstop(_data[channel], BoardShim.get_sampling_rate(board_id), 24.25, 1.0, 3, FilterTypes.BUTTERWORTH.value, 0)
+            #Denoise
+            DataFilter.perform_wavelet_denoising(_data[channel], 'coif3', 3)
+        return _data
+
+    def detrend_signal(_data, _eeg_channels):
+        for channel in _eeg_channels:
+            DataFilter.detrend(_data[_eeg_channels], DetrendOperations.LINEAR.value)
+        return _data
+
+    def calculate_psd(_data, _eeg_channels):
+        for channel in _eeg_channels:
+            DataFilter.get_psd_welch(_data[channel], nfft, nfft // 2, sampling_rate, WindowFunctions.BLACKMAN_HARRIS.value)
+        return _data
+
+    def get_bands(_data, _eeg_channels):
+        return DataFilter.get_avg_band_powers(_data, _eeg_channels, sampling_rate, True)
+
+#### CLASSIFICATIONS ######################
+
+    def get_concentration(_bands):
+        feature_vector = np.concatenate((_bands[0], _bands[1]))
+        concentration_params = BrainFlowModelParams(BrainFlowMetrics.CONCENTRATION.value, BrainFlowClassifiers.KNN.value)
+        concentration = MLModel(concentration_params)
+        concentration.prepare()
+        conc = concentration.predict(feature_vector)
+        concentration.release()
+        return conc
+
+    def get_relaxation(_bands):
+        feature_vector = np.concatenate((_bands[0], _bands[1]))
+        relaxation_params = BrainFlowModelParams(BrainFlowMetrics.RELAXATION.value, BrainFlowClassifiers.REGRESSION.value)
+        relaxation = MLModel(relaxation_params)
+        relaxation.prepare()
+        relax = relaxation.predict(feature_vector)
+        relaxation.release()
+        return relax
+
+    def SSVEP(_psd, _eeg_channels, _freq_start, _freq_end):
+        for channel in _eeg_channels:
+           bands = DataFilter.get_band_power(_psd[channel], _freq_start, _freq_end)
+        return bands
+
+
+
+##########################################        
+
     def stop_stream():
         board.stop_stream()
         board.release_session()
@@ -52,77 +107,33 @@ def main():
         board.start_stream()
         BoardShim.log_message(LogLevels.LEVEL_INFO.value, 'starting stream')
         eeg_channels = BoardShim.get_eeg_channels(board_id)
-        left_mu_beta_ratio = 0
-        right_mu_beta_ratio = 0
 
         while True:
-            time.sleep(2.5)
+            time.sleep(2)
             data = board.get_board_data()
-            right_prefrontal = eeg_channels[1]
-            right_hand = eeg_channels[2]
-            left_hand = eeg_channels[3]
 
-            #detrend
-            DataFilter.detrend(data[right_prefrontal], DetrendOperations.LINEAR.value)
-            DataFilter.detrend(data[right_hand], DetrendOperations.LINEAR.value)
-            DataFilter.detrend(data[left_hand], DetrendOperations.LINEAR.value)
-
-            # BAND POWERS
-            psd_rprefrontal = DataFilter.get_psd_welch(data[right_prefrontal], nfft, nfft // 2, sampling_rate, WindowFunctions.BLACKMAN_HARRIS.value)
-            psd_rhand = DataFilter.get_psd_welch(data[right_hand], nfft, nfft // 2, sampling_rate, WindowFunctions.BLACKMAN_HARRIS.value)
-            psd_lhand = DataFilter.get_psd_welch(data[left_hand], nfft, nfft // 2, sampling_rate, WindowFunctions.BLACKMAN_HARRIS.value)
-
-            # CREATIVITY INDEX
-            rp_band_power_alpha = DataFilter.get_band_power(psd_rprefrontal, 10.0, 12.0)
-            rp_band_power_beta = DataFilter.get_band_power(psd_rprefrontal, 14.0, 30.0)
-            # print("creativity:", rp_band_power_alpha / rp_band_power_beta) #given by alpha/beta
-
-            # LEFT MOTOR CORTEX MU
-            rh_band_power_mu = DataFilter.get_band_power(psd_rhand, 9, 11)
-            rh_band_power_beta = DataFilter.get_band_power(psd_rhand, 14.0, 30.0)
-
-            old_value_RMBR = right_mu_beta_ratio
-            right_mu_beta_ratio = rh_band_power_mu / rh_band_power_beta
-
-            right_diff = old_value_RMBR - right_mu_beta_ratio
-
-            # print("right hand:", right_mu_beta_ratio)
-
-            # RIGHT MOTOR CORTEX MU
-            lh_band_power_mu = DataFilter.get_band_power(psd_lhand, 9, 11)
-            lh_band_power_beta = DataFilter.get_band_power(psd_lhand, 14.0, 30.0)
-
-            old_value_LMBR = left_mu_beta_ratio
-            left_mu_beta_ratio = lh_band_power_mu / lh_band_power_beta
-
-            left_diff = old_value_LMBR - left_mu_beta_ratio
-
-            # if left_diff <0.5 and right_diff <0.05:
-            #     print("forward")
-            if left_diff > 0.1: 
-                print("left")
-            elif right_diff > 0.1: 
-                print("right")
-            
-            
-            # print("left hand:", left_diff)
+            # data = filter_signal(data, eeg_channels)
+            # data = detrend_signal(data, eeg_channels)
+            psd = calculate_psd(data, eeg_channels)
+            bands = get_bands(data, eeg_channels)
 
 
-            # print("left hand:", left_mu_beta_ratio)
+            # SS_10 = SSVEP(psd, eeg_channels[0], 9.0, 11.0)
+            O2_psd = DataFilter.get_psd_welch(data[eeg_channels[7]], nfft, nfft // 2, sampling_rate, WindowFunctions.BLACKMAN_HARRIS.value)
+            SS_10_single = DataFilter.get_band_power(O2_psd, 29.0, 31.0)
+            # conc = get_concentration(bands)
+            # relax = get_relaxation(bands)
 
+            # print(conc, relax)
+            print(SS_10_single)
 
-            # if left_mu_beta_ratio + 3 > right_mu_beta_ratio:
-            #     print("left")
-            # else:
-            #     print("right")
-
-
-            # # fail test if ratio is not smth we expect
-            # if (band_power_alpha / band_power_beta < 100):
-            #     raise ValueError('Wrong Ratio')
-
+            if SS_10_single > 1.0 and SS_10_single < 2.0:
+                print("select 10")
 
     start_stream()
 
 if __name__ == "__main__":
     main()
+
+
+# TODO SORT OUT SSVEP
