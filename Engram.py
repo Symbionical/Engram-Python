@@ -159,6 +159,23 @@ def main():
             _emotion = 'Sad'
         return _emotion
 
+    def get_peripheral_awarness(_data):
+        psd_o1 = DataFilter.get_psd_welch(_data[7], nfft, nfft // 2, sampling_rate, WindowFunctions.BLACKMAN_HARRIS.value)
+        high_alpha_01 = DataFilter.get_band_power(psd_o1, 10.0, 12.0)
+        low_beta_01 = DataFilter.get_band_power(psd_o1, 14.0, 15.0)
+
+        psd_o2 = DataFilter.get_psd_welch(_data[7], nfft, nfft // 2, sampling_rate, WindowFunctions.BLACKMAN_HARRIS.value)
+        higha_lpha_02 = DataFilter.get_band_power(psd_o2, 10.0, 12.0)
+        low_beta_02 = DataFilter.get_band_power(psd_o2, 14.0, 15.0)
+
+        occipital_high_alpha = (high_alpha_01 + higha_lpha_02) / 2
+        occipital_low_beta = (low_beta_01 + low_beta_02) / 2
+
+        if (occipital_high_alpha > 0.76 & occipital_high_alpha < 1.19 & occipital_low_beta < occipital_high_alpha):
+            return "t"
+        else:
+            return "f"
+
 ###########################################
 
 #### WIP CLASSIFICATIONS ##################
@@ -210,6 +227,7 @@ def main():
             relaxation = get_relaxation(bands)
             valance = get_valance_bands(data, emoSVM)
             emotion = get_emotion(valance, relaxation)
+            peripherally_aware = get_peripheral_awarness(data)
 
             print(emotion)
 
