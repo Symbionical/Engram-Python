@@ -5,7 +5,7 @@ Any BCI device that is compatible with brainflow should be compatible with Engra
 
 Engram has a set of ready made functions for easy out-of-the-box classifcation of brain acitivity, as well as signal cleaning. 
 
-Classifications currently include
+Stable Classifications
 * Concentration
 * Relaxation
 * Valence
