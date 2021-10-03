@@ -10,6 +10,7 @@ Classifications currently include
 * Relaxation
 * Valence
 * Emotion (2 dimensional)
+* Peripheral Awareness
 
 WIP classifications
 * Left/right hand motor imagery 
